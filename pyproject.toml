@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vllm_tenstorrent"
+version = "0.1.0"
+description = "Tenstorrent backend plugin for vLLM"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "vllm>=0.6.0, <0.10.0",
+    "numpy>=1.23.5, <2",
+    "transformers==4.53.0", 
+    "ttnn",
+]
+
+[project.entry-points."vllm.platform_plugins"]
+tt = "vllm_tenstorrent:register"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["vllm_tenstorrent*"]
+exclude = []
+namespaces = false
