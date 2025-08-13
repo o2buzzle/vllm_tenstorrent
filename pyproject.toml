@@ -13,6 +13,7 @@ dependencies = [
     "numpy>=1.23.5, <2",
     "transformers==4.53.0", 
     "ttnn",
+    "qwen-vl-utils",
 ]
 
 [project.entry-points."vllm.platform_plugins"]

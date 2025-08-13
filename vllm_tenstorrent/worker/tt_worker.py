@@ -181,7 +181,8 @@ class TTWorker(LoRANotSupportedWorkerBase, LocalOrDistributedWorkerBase):
     def init_device(self) -> None:
         override_tt_config = get_current_vllm_config().additional_config.get(
             "override_tt_config", None)
-        self.mesh_device = open_mesh_device(override_tt_config, self.trace_mode)
+        self.mesh_device = open_mesh_device(
+            override_tt_config, self.trace_mode)
 
     def load_model(self):
         self.model_runner.load_model()
@@ -199,9 +200,9 @@ class TTWorker(LoRANotSupportedWorkerBase, LocalOrDistributedWorkerBase):
         appended to.
         """
         # TODO: Add proper implementation which runs profiling on TT devices
-        if ("Llama-3.1-8B" in self.model_config.model
+        if (("Llama-3.1-8B" in self.model_config.model or "Mistral-7B" in self.model_config.model)
                 and self.device_config.device.get_num_devices() == 1
-                and "wormhole_b0" in ttnn.get_arch_name()):  # Llama8B on N150
+                and "wormhole_b0" in ttnn.get_arch_name()):  # Llama8B on N150 and Mistral7B on N150
             max_tokens_all_users = 65536
         elif ("Llama-3.2-90B" in self.model_config.model
               and self.device_config.device.get_num_devices() == 8
@@ -239,11 +240,11 @@ class TTWorker(LoRANotSupportedWorkerBase, LocalOrDistributedWorkerBase):
         num_cpu_blocks: int,
     ) -> None:
         """Initialize the KV cache with the given size in blocks.
-        
+
         - Checks cache size is valid
         - Updates cache_config with num_gpu_blocks and num_cpu_blocks
         - init cache engine
-        
+
         Note that CPU, TPU, and openvino workers don't use standard CacheEngine
         """
         # Skip check, since we're setting num_gpu_blocks much lower than would
@@ -306,7 +307,7 @@ class TTWorker(LoRANotSupportedWorkerBase, LocalOrDistributedWorkerBase):
     def execute_worker(self, worker_input: WorkerInput) -> None:
         """
         Process an execution request.
-        
+
         Appears to do swap_in, swap_out, copy for KV blocks,
         right before executing the model.
         """
@@ -393,7 +394,7 @@ class TTWorker(LoRANotSupportedWorkerBase, LocalOrDistributedWorkerBase):
         # output is List[SamplerOutput]
         return output
 
-    ## Destructor (used to close devices)
+    # Destructor (used to close devices)
 
     def __del__(self):
         # Delete model runner first in case there are model arifacts
@@ -410,16 +411,8 @@ class TTWorker(LoRANotSupportedWorkerBase, LocalOrDistributedWorkerBase):
 # TT-NN utilities, also used by V1 TTWorker
 
 
-def get_dispatch_core_type():
-    dispatch_core_type = ttnn.device.DispatchCoreType.WORKER
-    if ("WH_ARCH_YAML" in os.environ) and os.environ[
-            "WH_ARCH_YAML"] == "wormhole_b0_80_arch_eth_dispatch.yaml":
-        dispatch_core_type = ttnn.device.DispatchCoreType.ETH
-    return dispatch_core_type
-
-
-def get_dispatch_core_config(override_tt_config, device_params):
-    dispatch_core_type = get_dispatch_core_type()
+def get_dispatch_core_config(override_tt_config):
+    dispatch_core_axis: ttnn.DispatchCoreAxis = None
 
     if (override_tt_config is not None
             and "dispatch_core_axis" in override_tt_config):
@@ -431,19 +424,21 @@ def get_dispatch_core_config(override_tt_config, device_params):
         dispatch_core_axis = (ttnn.DispatchCoreAxis.COL
                               if override_tt_config["dispatch_core_axis"]
                               == "col" else ttnn.DispatchCoreAxis.ROW)
+    return ttnn.DispatchCoreConfig(axis=dispatch_core_axis)
+
+
+def get_fabric_config(override_tt_config, num_devices):
+    if num_devices == 1:
+        # No fabric config for single device
+        fabric_config = None
     else:
-        dispatch_core_axis = device_params.pop(
-            "dispatch_core_axis",
-            ttnn.DispatchCoreAxis.COL if "blackhole" in ttnn.get_arch_name()
-            else ttnn.DispatchCoreAxis.ROW,
-        )
+        # Set the most common value as default
+        is_6u = (
+            ttnn.cluster.get_cluster_type() == ttnn.cluster.ClusterType.GALAXY)
+        fabric_config = (ttnn.FabricConfig.FABRIC_1D_RING
+                         if is_6u else ttnn.FabricConfig.FABRIC_1D)
 
-    dispatch_core_config = ttnn.DispatchCoreConfig(dispatch_core_type,
-                                                   dispatch_core_axis)
-    return dispatch_core_config
-
-
-def get_fabric_config(override_tt_config):
+    # Override fabric_config if specified in override_tt_config
     if (override_tt_config is not None
             and "fabric_config" in override_tt_config):
         fabric_config_str = override_tt_config["fabric_config"]
@@ -458,16 +453,15 @@ def get_fabric_config(override_tt_config):
         assert fabric_config is not None, (
             f"Invalid fabric_config: {fabric_config_str}. "
             f"Expected one of {list(fabric_config_map.keys())}.")
-        return fabric_config
-    return None
+    return fabric_config
 
 
 # From tt-metal/conftest.py:
 # Set fabric config to passed in value
 # Do nothing if not set
 # Must be called before creating the mesh device
-def set_fabric(override_tt_config):
-    fabric_config = get_fabric_config(override_tt_config)
+def set_fabric(override_tt_config, num_devices):
+    fabric_config = get_fabric_config(override_tt_config, num_devices)
     if fabric_config:
         ttnn.set_fabric_config(fabric_config)
 
@@ -478,8 +472,8 @@ def set_fabric(override_tt_config):
 # in as even setting it to DISABLED might be unstable
 # This is to ensure that we don't propagate
 # the instability to the rest of CI
-def reset_fabric(override_tt_config):
-    fabric_config = get_fabric_config(override_tt_config)
+def reset_fabric(override_tt_config, num_devices):
+    fabric_config = get_fabric_config(override_tt_config, num_devices)
     if fabric_config:
         ttnn.set_fabric_config(ttnn.FabricConfig.DISABLED)
 
@@ -530,12 +524,12 @@ def open_mesh_device(override_tt_config, trace_mode):
         override_tt_config, trace_mode)
 
     # Set fabric before opening the device
-    set_fabric(override_tt_config)
+    num_devices_requested = mesh_grid[0] * mesh_grid[1]
+    set_fabric(override_tt_config, num_devices_requested)
 
     mesh_device = ttnn.open_mesh_device(
         ttnn.MeshShape(*mesh_grid),
-        dispatch_core_config=get_dispatch_core_config(override_tt_config,
-                                                      device_params),
+        dispatch_core_config=get_dispatch_core_config(override_tt_config),
         **device_params,
     )
     logger.info("multidevice with %d devices and grid %s is created",
@@ -548,7 +542,8 @@ def close_mesh_device(mesh_device, override_tt_config):
     ttnn.ReadDeviceProfiler(mesh_device)
 
     # Close devices
+    num_devices = mesh_device.get_num_devices()
     ttnn.close_mesh_device(mesh_device)
 
     # Reset fabric
-    reset_fabric(override_tt_config)
+    reset_fabric(override_tt_config, num_devices)

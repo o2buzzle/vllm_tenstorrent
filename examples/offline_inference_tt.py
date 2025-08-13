@@ -2,6 +2,7 @@
 import argparse
 import json
 import os
+from pyexpat import model
 import time
 from pathlib import Path
 
@@ -52,6 +53,58 @@ def get_sample_multi_modal_llama_inputs():
         else:
             inputs.append({"prompt": question})
     return inputs
+
+
+def get_sample_multi_modal_qwen_inputs(model):
+    # Prepare a sample multi-modal prompt for Qwen2.5-VL
+    text_prompts = []
+    imgs = []
+    questions = ["Describe this image."]
+    img_refs = [
+        "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen-VL/assets/demo.jpeg"
+    ]
+    prompts = [[{
+        "role":
+        "user",
+        "content": [{
+            "type": "image",
+            "image": img_ref
+        }, {
+            "type": "text",
+            "text": question
+        }]
+    }] for img_ref, question in zip(img_refs, questions)]
+    tokenizer = AutoTokenizer.from_pretrained(model, trust_remote_code=True)
+    for prompt in prompts:
+        chat_prompt = tokenizer.apply_chat_template(prompt,
+                                                    tokenize=False,
+                                                    add_generation_prompt=True)
+        if any(ctnt["type"] == "image" for entry in prompt
+               for ctnt in entry['content']):
+            from qwen_vl_utils import (
+                process_vision_info)  # Import here to avoid for other models
+            image_inputs, video_inputs = process_vision_info(prompt)
+            assert video_inputs is None, "Video inputs not supported yet"
+            assert len(
+                image_inputs) == 1, "Multi-image inputs not supported yet"
+            imgs.append(image_inputs[0])
+        else:
+            imgs.append(None)
+        text_prompts.append(chat_prompt)
+
+    inputs = []
+    for img, text_prompt in zip(imgs, text_prompts):
+        if img is not None:
+            inputs.append({
+                "prompt": text_prompt,
+                "multi_modal_data": {
+                    "image": img
+                }
+            })
+        else:
+            inputs.append({"prompt": text_prompt})
+    return inputs
+
 
 def run_seq_len_tests(engine_kw_args, sampling_params):
     '''
@@ -106,8 +159,9 @@ def run_inference(
     generate_env(model)
 
     if multi_modal:
-        assert "Llama-3.2" in model, "The multi-modal inference test " + \
-            "currently only supports Llama-3.2 models"
+        assert "Llama-3.2" in model or "Qwen2.5-VL" in model, (
+            "The multi-modal inference test "
+            "currently only supports Llama-3.2 and Qwen2.5-VL models")
 
     # LLM args
     engine_kw_args = {
@@ -165,7 +219,14 @@ def run_inference(
                               list), "Prompts must be a list of strings"
         else:
             print("Ignoring prompts json for multi-modal inference")
-            prompts = get_sample_multi_modal_llama_inputs()
+            if "Llama-3.2" in model:
+                prompts = get_sample_multi_modal_llama_inputs()
+            elif "Qwen2.5-VL" in model:
+                prompts = get_sample_multi_modal_qwen_inputs(model)
+            else:
+                raise ValueError(
+                    f"Unsupported model for multi-modal inference test: {model}"
+                )
         if num_repeat_prompts is not None:
             prompts = prompts * num_repeat_prompts
         print("Number of prompts:", len(prompts))
@@ -183,8 +244,15 @@ def run_inference(
                 "prompt_token_ids": prompt_token_ids_user
             } for _ in range(max_seqs_in_batch)]
         else:
-            MLLAMA_IMAGE_TOKEN_ID = 128256  # Specific to multi-modal llama
-            prompt_token_ids_user.insert(0, MLLAMA_IMAGE_TOKEN_ID)
+            if "Llama-3.2" in model:
+                IMAGE_TOKEN_ID = 128256  # Specific to multi-modal llama
+            elif "Qwen2.5-VL" in model:
+                IMAGE_TOKEN_ID = 151655  # Specific to multi-modal qwen
+            else:
+                raise ValueError(
+                    f"Unsupported model for multi-modal inference test in perf "
+                    f"mode: {model}")
+            prompt_token_ids_user.insert(0, IMAGE_TOKEN_ID)
             random_pixels = np.random.randint(0,
                                               256, (512, 512, 3),
                                               dtype=np.uint8)

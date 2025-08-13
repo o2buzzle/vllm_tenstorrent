@@ -86,7 +86,7 @@ def top_pk_logits_efficient(logits,
                             return_probs=False):
     # Do not keep the entire vocab size after top k.
     # Instead, keep the k size tensor and record the associated indices.
-    if k <= 0:  # no top-k sampling 
+    if k <= 0:  # no top-k sampling
         top_k_values, top_k_indices = logits, torch.arange(
             logits.shape[-1]).unsqueeze(0).repeat(logits.shape[0], 1)
     else:
@@ -418,7 +418,7 @@ class TTModelRunner(ModelRunnerBase[TTModelInput]):
                                 dtype=torch.int32,
                                 device="cpu")
                 ],
-                                         dim=1)
+                    dim=1)
                 if self.model_config.is_encoder_decoder:
                     # Note for vision models: the number of cross blocks
                     # may change if the number of image tiles changes
@@ -431,7 +431,7 @@ class TTModelRunner(ModelRunnerBase[TTModelInput]):
                                     dtype=torch.int32,
                                     device="cpu")
                     ],
-                                                   dim=1)
+                        dim=1)
 
         if self.dp_kv_cache:
 
@@ -504,7 +504,7 @@ class TTModelRunner(ModelRunnerBase[TTModelInput]):
                     next_token_ids, read_event = next_token_ids
                     self.cached_read_events.append(read_event)
                 self.cached_step_outputs.append(next_token_ids)
-                if not self.llama_tg and i < num_steps - 1:
+                if (not self.llama_tg and i < num_steps - 1 and not self.sample_on_device_mode):
                     # Prepare the inputs for the next step
                     new_input_tokens = next_token_ids.unsqueeze(dim=1).int()
                     if new_input_tokens.shape[
@@ -543,7 +543,8 @@ class TTModelRunner(ModelRunnerBase[TTModelInput]):
                 # the last step should have 1 output unless we have
                 # scheduled less than self.scheduler_config.num_lookahead_slots
                 # + 1 steps in which case there will be 0 outputs
-                assert num_outputs <= 1, ("Last step should have at most one output")
+                assert num_outputs <= 1, (
+                    "Last step should have at most one output")
             for i in range(num_outputs):
                 next_token_ids = self.cached_step_outputs.pop(0)
                 if is_decode and self.async_torch_proc:
@@ -649,10 +650,12 @@ class TTModelRunner(ModelRunnerBase[TTModelInput]):
             execute_model_kwargs["prompt_lens"] = model_input.prompt_lens
         else:
             execute_model_kwargs["start_pos"] = model_input.input_positions
+
         if self.sample_on_device_mode == "all" or (
                 self.sample_on_device_mode == "decode_only" and is_decode):
             execute_model_kwargs[
                 "sampling_params"] = model_input.tt_sampling_params
+
         if model_input.cross_block_tables is not None:
             execute_model_kwargs[
                 "cross_page_table"] = model_input.cross_block_tables
@@ -680,9 +683,9 @@ class TTModelRunner(ModelRunnerBase[TTModelInput]):
                 # Save encoder-decoder data for use in subsequent decode steps
                 # (may need to be updated for future models)
                 tt_out, prefill_cross_attention_masks, \
-                prefill_full_text_row_masked_out_mask, \
-                decode_cross_attention_masks, \
-                 decode_full_text_row_masked_out_mask = outputs
+                    prefill_full_text_row_masked_out_mask, \
+                    decode_cross_attention_masks, \
+                    decode_full_text_row_masked_out_mask = outputs
                 if self.cached_enc_dec_data is None:
                     self.cached_enc_dec_data = {}
                 for i, seq_id in enumerate(model_input.seq_groups):

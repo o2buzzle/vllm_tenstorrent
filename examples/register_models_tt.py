@@ -1,6 +1,7 @@
 from vllm import ModelRegistry
 import os
 
+
 def register_models_tt():
     llama_text_version = os.getenv("TT_LLAMA_TEXT_VER", "tt_transformers")
     if llama_text_version == "tt_transformers":
@@ -36,6 +37,11 @@ def register_models_tt():
         "TTMistralForCausalLM",
         "models.tt_transformers.tt.generator_vllm:MistralForCausalLM")
 
+    ModelRegistry.register_model(
+        "TTQwen2_5_VLForConditionalGeneration",
+        "models.demos.qwen25_vl.tt.generator_vllm:Qwen2_5_VLForConditionalGeneration"
+    )
+
 
 def check_tt_model_supported(model):
     supported_models = [
@@ -59,6 +65,9 @@ def check_tt_model_supported(model):
         "Qwen/Qwen2.5-Coder-32B-Instruct",
         "Qwen/Qwen2.5-72B",
         "Qwen/Qwen2.5-72B-Instruct",
+        "Qwen/Qwen2.5-VL-3B-Instruct",
+        "Qwen/Qwen2.5-VL-32B-Instruct",
+        "Qwen/Qwen2.5-VL-72B-Instruct",
         "Qwen/Qwen3-0.6B",
         "Qwen/Qwen3-1.7B",
         "Qwen/Qwen3-4B",
@@ -71,19 +80,19 @@ def check_tt_model_supported(model):
     ]
     assert model in supported_models, f"Invalid model: {model}"
 
+
 def generate_env(model):
     current_env = os.environ.copy()
-    
+
     # We can auto-update Qwen
     if model.startswith("Qwen/"):
         current_env["HF_MODEL"] = model
-        
+
     # Not for Llama since they require LLAMA_DIR (impossible to do)
     if model.startswith("meta-llama/"):
         if "LLAMA_DIR" not in current_env:
             raise ValueError(
                 "LLAMA_DIR environment variable is required for Llama models. "
                 "Please set it to the Meta checkpoint-style weights.")
-        
+
     os.environ.update(current_env)
-        
