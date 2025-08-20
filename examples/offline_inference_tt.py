@@ -176,12 +176,11 @@ def run_inference(
         "disable_async_output_proc": disable_async_output_proc,
     }
 
+    vllm_current_config = get_current_vllm_config()
     try:
         if override_tt_config:
-            vllm_current_config = get_current_vllm_config()
             vllm_current_config.additional_config[
                 "override_tt_config"] = json.loads(override_tt_config)
-            set_current_vllm_config(vllm_current_config)
     except json.JSONDecodeError as err:
         raise ValueError(
             f"Invalid JSON string for override_tt_config: {err}") from err
@@ -272,35 +271,37 @@ def run_inference(
         sampling_params.max_tokens = max_tokens
 
     # Create and run LLM
-    if not async_engine:
-        llm = LLM(**engine_kw_args)
-        if not measure_perf:
-            generate_tokens(llm, prompts, sampling_params, print_output=True)
+    with set_current_vllm_config(vllm_current_config):
+        if not async_engine:
+            llm = LLM(**engine_kw_args)
+            if not measure_perf:
+                generate_tokens(llm, prompts, sampling_params,
+                                print_output=True)
+            else:
+                max_model_len = llm.llm_engine.model_config.max_model_len
+                check_valid_perf_prompt_len(max_model_len, perf_prompt_len,
+                                            sampling_params)
+                run_inference_perf(llm, prompts, sampling_params)
         else:
-            max_model_len = llm.llm_engine.model_config.max_model_len
-            check_valid_perf_prompt_len(max_model_len, perf_prompt_len,
-                                        sampling_params)
-            run_inference_perf(llm, prompts, sampling_params)
-    else:
-        print("Using async engine")
-        engine_args = AsyncEngineArgs(**engine_kw_args)
+            print("Using async engine")
+            engine_args = AsyncEngineArgs(**engine_kw_args)
 
-        async def _run_inference_async():
-            async with build_async_engine_client_from_engine_args(
-                    engine_args) as llm:
-                if not measure_perf:
-                    await generate_tokens_async(llm,
-                                                prompts,
-                                                sampling_params,
-                                                print_output=True)
-                else:
-                    max_model_len = llm.model_config.max_model_len
-                    check_valid_perf_prompt_len(max_model_len, perf_prompt_len,
-                                                sampling_params)
-                    await run_inference_perf_async(llm, prompts,
-                                                   sampling_params)
+            async def _run_inference_async():
+                async with build_async_engine_client_from_engine_args(
+                        engine_args) as llm:
+                    if not measure_perf:
+                        await generate_tokens_async(llm,
+                                                    prompts,
+                                                    sampling_params,
+                                                    print_output=True)
+                    else:
+                        max_model_len = llm.model_config.max_model_len
+                        check_valid_perf_prompt_len(max_model_len, perf_prompt_len,
+                                                    sampling_params)
+                        await run_inference_perf_async(llm, prompts,
+                                                       sampling_params)
 
-        uvloop.run(_run_inference_async())
+            uvloop.run(_run_inference_async())
 
 
 def check_valid_perf_prompt_len(max_model_len, perf_prompt_len,
