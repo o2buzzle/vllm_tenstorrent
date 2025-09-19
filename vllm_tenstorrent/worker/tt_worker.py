@@ -1,8 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+
 import dataclasses
 import math
 import os
 import time
+from contextlib import suppress
 from typing import List, Optional, Tuple, cast
 
 import torch
@@ -14,7 +17,7 @@ from vllm.logger import init_logger
 from vllm.model_executor.layers.sampler import SamplerOutput
 from vllm.sequence import ExecuteModelRequest
 from vllm.utils import STR_DTYPE_TO_TORCH_DTYPE, LayerBlockType
-from vllm.worker.tt_model_runner import TTModelInput, TTModelRunner
+from .tt_model_runner import TTModelInput, TTModelRunner
 from vllm.worker.worker_base import (LocalOrDistributedWorkerBase,
                                      LoRANotSupportedWorkerBase, WorkerBase,
                                      WorkerInput)
@@ -205,13 +208,16 @@ class TTWorker(LoRANotSupportedWorkerBase, LocalOrDistributedWorkerBase):
                 and "data_parallel" in self.model_config.override_tt_config):
             data_parallel = self.model_config.override_tt_config[
                 "data_parallel"]
+
         is_wormhole = "wormhole_b0" in ttnn.get_arch_name()
         num_devices_per_model = (self.device_config.device.get_num_devices() //
                                  data_parallel)
 
-        if (("Llama-3.1-8B" in self.model_config.model or "Mistral-7B" in self.model_config.model)
-                and num_devices_per_model == 1
-                and is_wormhole):  # Llama8B on N150 and Mistral7B on N150
+        if (("Llama-3.1-8B" in self.model_config.model
+             or "Mistral-7B" in self.model_config.model
+             or "gemma-3-4b" in self.model_config.model)
+                and num_devices_per_model == 1 and is_wormhole):
+            # Llama8B, Mistral7B, and gemma3-4b on N150
             max_tokens_all_users = 65536
         elif (("DeepSeek-R1-Distill-Qwen-14B" in self.model_config.model
                or "Qwen2.5-14B" in self.model_config.model)
@@ -219,7 +225,8 @@ class TTWorker(LoRANotSupportedWorkerBase, LocalOrDistributedWorkerBase):
             # Qwen2.5-14B on N300
             max_tokens_all_users = 65536
         elif ("Llama-3.2-90B" in self.model_config.model
-              and num_devices_per_model == 8 and is_wormhole):  # Llama90B on WH T3K
+              and num_devices_per_model == 8 and is_wormhole):
+            # Llama90B on WH T3K
             max_tokens_all_users = 65536
         else:
             # Note: includes num vision tokens for multi-modal
@@ -411,22 +418,24 @@ class TTWorker(LoRANotSupportedWorkerBase, LocalOrDistributedWorkerBase):
 
     def __del__(self):
         # Delete model runner first in case there are model arifacts
-        del self.model_runner
+        with suppress(AttributeError):
+            # attributes may be already torn down when destructor is called
+            del self.model_runner
 
-        if self.mesh_device:
-            override_tt_config = get_current_vllm_config().additional_config.get(
-                "override_tt_config", None)
-            close_mesh_device(self.mesh_device, override_tt_config)
+            if self.mesh_device:
+                close_mesh_device(self.mesh_device,
+                                  self.model_config.override_tt_config)
+                del self.mesh_device
 
         if hasattr(super(), '__del__'):
             super().__del__()  # type: ignore
+
 
 # TT-NN utilities, also used by V1 TTWorker
 
 
 def get_dispatch_core_config(override_tt_config):
     dispatch_core_axis: ttnn.DispatchCoreAxis = None
-
     if (override_tt_config is not None
             and "dispatch_core_axis" in override_tt_config):
         assert override_tt_config["dispatch_core_axis"] in [
@@ -437,6 +446,7 @@ def get_dispatch_core_config(override_tt_config):
         dispatch_core_axis = (ttnn.DispatchCoreAxis.COL
                               if override_tt_config["dispatch_core_axis"]
                               == "col" else ttnn.DispatchCoreAxis.ROW)
+
     return ttnn.DispatchCoreConfig(axis=dispatch_core_axis)
 
 
@@ -503,6 +513,9 @@ def device_params_from_override_tt_config(override_tt_config, trace_mode):
 
     if override_tt_config and "worker_l1_size" in override_tt_config:
         device_params["worker_l1_size"] = override_tt_config["worker_l1_size"]
+
+    if override_tt_config and "l1_small_size" in override_tt_config:
+        device_params["l1_small_size"] = override_tt_config["l1_small_size"]
 
     return device_params
 
