@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import os
 from typing import TYPE_CHECKING, Optional, Union
 
 import torch
@@ -56,8 +57,15 @@ class TTPlatform(Platform):
         # to return an error instead of crashing.
         # TODO move this to tt_model_runner when request validation
         # stops depending on vllm_config
-        override_tt_config = vllm_config.additional_config.get("override_tt_config", None)
-        
+        override_tt_config = vllm_config.additional_config.get(
+            "override_tt_config", None)
+
+        if os.environ.get("OVERRIDE_TT_CONFIG", None) is not None:
+            import json
+            override_tt_config = json.loads(os.environ["OVERRIDE_TT_CONFIG"])
+            logger.info(
+                f"Found override_tt_config from environment. Override.")
+
         if (override_tt_config is not None
                 and "sample_on_device_mode" in override_tt_config):
             sample_on_device_mode = override_tt_config["sample_on_device_mode"]
