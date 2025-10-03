@@ -3,7 +3,7 @@
 
 import dataclasses
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Type, Union
+from typing import Any, Callable, Dict, List, Optional, Set, Type, Union
 
 import torch
 import torch.nn as nn
@@ -113,8 +113,18 @@ def top_pk_logits_efficient(logits,
         return token
 
 
-class TTModelRunner(ModelRunnerBase[TTModelInput]):
+def sample_tokens(logits, tt_sampling_params: TTSamplingParams):
+    if tt_sampling_params.temperature == 0:  # greedy decoding
+        return torch.argmax(logits, dim=-1)
+    else:  # top-k top-p sampling
+        return top_pk_logits_efficient(
+            logits,
+            p=tt_sampling_params.top_p,
+            k=tt_sampling_params.top_k,
+            temperature=tt_sampling_params.temperature)
 
+
+class TTModelRunner(ModelRunnerBase[TTModelInput]):
     def __init__(
         self,
         vllm_config: VllmConfig,
@@ -153,6 +163,7 @@ class TTModelRunner(ModelRunnerBase[TTModelInput]):
                 "a model cannot be encoder-decoder and request-specific rope")
             # seq_id -> cached_req_data
             self.cached_req_data: Dict[int, Dict[str, Any]] = {}
+            self.previous_seq_ids: Set[int] = set()
 
         # Detect if the model has "mrope" rope_scaling type.
         # mrope requires keep "rope_deltas" between prompt and decoding phases.
@@ -183,9 +194,10 @@ class TTModelRunner(ModelRunnerBase[TTModelInput]):
             self.max_cross_blocks = (self.model.max_cross_attn_tokens //
                                      self.cache_config.block_size)
 
-        is_dp = (self.model_config.override_tt_config
-                 and self.model_config.override_tt_config.get(
-                     "data_parallel", 1) > 1)
+        override_tt_config = self.vllm_config.additional_config.get(
+            "override_tt_config", None)
+        is_dp = (override_tt_config
+                 and override_tt_config.get("data_parallel", 1) > 1)
 
         # Detect if the model is a TG Llama to use DP KV cache
         # vLLM doesn't know which blocks correspond to which DP device pool so
@@ -813,12 +825,17 @@ class TTModelRunner(ModelRunnerBase[TTModelInput]):
                     decode_full_text_row_masked_out_mask
                 }
             elif self.request_specific_rope:
-                enc_dec_kwargs = {
-                    "rot_mats_all_users": [
-                        self.cached_req_data[seq_id]["rot_mats"]
-                        for seq_id in model_input.seq_groups
-                    ]
-                }
+                if any(seq_id not in self.previous_seq_ids
+                       for seq_id in model_input.seq_groups):
+                    enc_dec_kwargs = {
+                        "rot_mats_all_users": [
+                            self.cached_req_data[seq_id]["rot_mats"]
+                            for seq_id in model_input.seq_groups
+                        ]
+                    }
+                else:
+                    enc_dec_kwargs = {"rot_mats_all_users": None}
+                self.previous_seq_ids = set(model_input.seq_groups)
             else:
                 enc_dec_kwargs = {}
 
@@ -899,8 +916,8 @@ class TTModelRunner(ModelRunnerBase[TTModelInput]):
                 # unpadded batch, vocab of last token
                 next_logits = tt_out[:model_input.unpadded_batch_size, -1, :]
                 assert model_input.tt_sampling_params is not None
-                next_token_ids = self._sample_tokens(
-                    next_logits, model_input.tt_sampling_params)
+                next_token_ids = sample_tokens(next_logits,
+                                               model_input.tt_sampling_params)
             else:  # sample on device
                 if self.async_torch_proc:
                     # do not slice as this may be mid-transfer to host
@@ -912,16 +929,6 @@ class TTModelRunner(ModelRunnerBase[TTModelInput]):
                 return tt_out, read_event
             else:
                 return next_token_ids
-
-    def _sample_tokens(self, logits, tt_sampling_params: TTSamplingParams):
-        if tt_sampling_params.temperature == 0:  # greedy decoding
-            return torch.argmax(logits, dim=-1)
-        else:  # top-k top-p sampling
-            return top_pk_logits_efficient(
-                logits,
-                p=tt_sampling_params.top_p,
-                k=tt_sampling_params.top_k,
-                temperature=tt_sampling_params.temperature)
 
     def _get_next_token_ids_from_sampler_output(
             self, sampler_output: SamplerOutput) -> torch.Tensor:

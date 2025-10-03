@@ -5,18 +5,20 @@ import os
 def register_models_tt():
     llama_text_version = os.getenv("TT_LLAMA_TEXT_VER", "tt_transformers")
     if llama_text_version == "tt_transformers":
-        path_llama_text = \
-            "models.tt_transformers.tt.generator_vllm:LlamaForCausalLM"
+        path_llama_text = "models.tt_transformers.tt.generator_vllm:LlamaForCausalLM"
     elif llama_text_version == "llama3_70b_galaxy":
-        path_llama_text = \
+        path_llama_text = (
             "models.demos.llama3_70b_galaxy.tt.generator_vllm:LlamaForCausalLM"
+        )
     elif llama_text_version == "llama2_70b":
-        path_llama_text = \
+        path_llama_text = (
             "models.demos.t3000.llama2_70b.tt.generator_vllm:TtLlamaForCausalLM"
+        )
     else:
         raise ValueError(
             f"Unsupported TT Llama version: {llama_text_version}, "
-            "pick one of [tt_transformers, llama3_70b_galaxy, llama2_70b]")
+            "pick one of [tt_transformers, llama3_70b_galaxy, llama2_70b]"
+        )
 
     # Llama3.1/3.2 - Text
     ModelRegistry.register_model("TTLlamaForCausalLM", path_llama_text)
@@ -24,7 +26,7 @@ def register_models_tt():
     # Llama3.2 - Vision
     ModelRegistry.register_model(
         "TTMllamaForConditionalGeneration",
-        "models.tt_transformers.tt.generator_vllm:MllamaForConditionalGeneration"
+        "models.tt_transformers.tt.generator_vllm:MllamaForConditionalGeneration",
     )
 
     # Qwen2.5 - Text
@@ -32,14 +34,22 @@ def register_models_tt():
     ModelRegistry.register_model("TTQwen2ForCausalLM", path_qwen_text)
     ModelRegistry.register_model("TTQwen3ForCausalLM", path_qwen_text)
 
+    # Qwen2.5 - Vision
+    ModelRegistry.register_model(
+        "TTQwen2_5_VLForConditionalGeneration",
+        "models.demos.qwen25_vl.tt.generator_vllm:Qwen2_5_VLForConditionalGeneration",
+    )
+
     # Mistral
     ModelRegistry.register_model(
         "TTMistralForCausalLM",
-        "models.tt_transformers.tt.generator_vllm:MistralForCausalLM")
+        "models.tt_transformers.tt.generator_vllm:MistralForCausalLM",
+    )
 
+    # Gemma3
     ModelRegistry.register_model(
-        "TTQwen2_5_VLForConditionalGeneration",
-        "models.demos.qwen25_vl.tt.generator_vllm:Qwen2_5_VLForConditionalGeneration"
+        "TTGemma3ForConditionalGeneration",
+        "models.tt_transformers.tt.generator_vllm:Gemma3ForConditionalGeneration",
     )
 
 
@@ -53,6 +63,7 @@ def check_tt_model_supported(model):
         "meta-llama/Llama-3.2-1B-Instruct",
         "meta-llama/Llama-3.2-3B",
         "meta-llama/Llama-3.2-3B-Instruct",
+        "meta-llama/Llama-3.2-11B-Vision",
         "meta-llama/Llama-3.2-11B-Vision-Instruct",
         "meta-llama/Llama-3.2-90B-Vision-Instruct",
         "meta-llama/Llama-3.3-70B",
@@ -79,6 +90,8 @@ def check_tt_model_supported(model):
         "deepseek-ai/DeepSeek-R1-Distill-Llama-70B",
         "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B",
         "mistralai/Mistral-7B-Instruct-v0.3",
+        "google/gemma-3-4b-it",
+        "google/gemma-3-27b-it",
     ]
     assert model in supported_models, f"Invalid model: {model}"
 

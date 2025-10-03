@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-import os
 from typing import TYPE_CHECKING, Optional, Union
 
 import torch
+import os
 
+import vllm.envs as envs
 from vllm.inputs import ProcessorInputs, PromptType
 from vllm.logger import init_logger
 from vllm.sampling_params import SamplingParams
@@ -13,9 +14,10 @@ from vllm.sampling_params import SamplingParams
 from vllm.platforms.interface import Platform, PlatformEnum
 
 if TYPE_CHECKING:
-    from vllm.config import VllmConfig
+    from vllm.config import ModelConfig, VllmConfig
     from vllm.pooling_params import PoolingParams
 else:
+    ModelConfig = None
     VllmConfig = None
     PoolingParams = None
 
@@ -46,10 +48,24 @@ class TTPlatform(Platform):
                 == 1), "TT backend does not support distributed execution"
         assert not vllm_config.lora_config, (
             "LoRA is not supported for TT backend")
+        assert not vllm_config.cache_config.enable_prefix_caching, (
+            "Automatic prefix caching is not yet supported for TT backend")
 
         parallel_config = vllm_config.parallel_config
         if parallel_config.worker_cls == "auto":
-            parallel_config.worker_cls = "vllm_tenstorrent.worker.TTWorker"
+            if envs.VLLM_USE_V1:
+                parallel_config.worker_cls = "vllm_tenstorrent.v1.worker.tt_worker.TTWorker"
+                vllm_config.scheduler_config.scheduler_cls = (
+                    "vllm_tenstorrent.v1.ascend_scheduler.AscendScheduler")
+            else:
+                parallel_config.worker_cls = "vllm_tenstorrent.worker.tt_worker.TTWorker"
+
+        # For TT models, prepend "TT" to the architecture name,
+        # e.g. "TTLlamaForCausalLM"
+        arch_names = vllm_config.model_config.hf_config.architectures
+        for i in range(len(arch_names)):
+            if not arch_names[i].startswith("TT"):
+                arch_names[i] = "TT" + arch_names[i]
 
         # Setting attributes on the class level is kind of hacky, but
         # it's the only way to make validate_request depend on vllm_config
@@ -85,15 +101,28 @@ class TTPlatform(Platform):
         cls.compat_sampling_possible = (  # type: ignore[attr-defined]
             sample_on_device_mode is None)
 
+        # type: ignore[attr-defined]
+        if cls.compat_sampling_possible and envs.VLLM_USE_V1:
+            cls.compat_sampling_possible = False  # type: ignore[attr-defined]
+            logger.warning(
+                "Disabling compatibility sampling as it's not yet support for "
+                "V1 TT backend.")
+
         always_compat_sampling = False
         if override_tt_config is not None \
                 and "always_compat_sampling" in override_tt_config:
-            logger.info("Compatibility sampling mode enabled for all requests")
             always_compat_sampling = override_tt_config[
                 "always_compat_sampling"]
             assert always_compat_sampling in [
                 True, False
             ], "always_compat_sampling must be a boolean"
+            if always_compat_sampling:
+                if envs.VLLM_USE_V1:
+                    raise ValueError(
+                        "always_compat_sampling is not yet supported for "
+                        "V1 TT backend.")
+                logger.info(
+                    "Compatibility sampling mode enabled for all requests")
         # type: ignore[attr-defined]
         cls.always_compat_sampling = always_compat_sampling
 
@@ -101,6 +130,39 @@ class TTPlatform(Platform):
         if cls.always_compat_sampling and not cls.compat_sampling_possible:
             raise ValueError("Compatibility sampling mode only works with"
                              "sample_on_device_mode=None")
+
+        # must perform local import to get around circular import
+        from vllm.model_executor.model_loader.utils import (
+            get_model_architecture)
+
+        # infer if non-greedy decoding is supported on-device
+        # based on model implementation, and update platform
+        model_class, _ = get_model_architecture(vllm_config.model_config)
+        # TODO: this should come from the class itself as an attribute
+        cls.non_greedy_decoding_on_device = True  # type: ignore[attr-defined]
+        if model_class.__module__.startswith(
+                "models.tt_transformers.tt.generator_vllm"):
+            # type: ignore[attr-defined]
+            cls.non_greedy_decoding_on_device = False
+
+    @classmethod
+    def supports_v1(cls, model_config: ModelConfig) -> bool:
+        # V1 support on TT is experimental.
+        # Allow users to opt in, but give a warning.
+        if envs.is_set("VLLM_USE_V1") and envs.VLLM_USE_V1:
+            if model_config.is_encoder_decoder:
+                raise ValueError(
+                    "VLLM_USE_V1=1 was set but encoder-decoder models aren't "
+                    "yet supported in V1 for TT")
+            elif model_config.is_multimodal_model:
+                raise ValueError(
+                    "VLLM_USE_V1=1 was set but multimodal models aren't "
+                    "yet supported in V1 for TT")
+            logger.warning(
+                "Enabling V1 since VLLM_USE_V1=1, however V1 is still "
+                "experimental for TT backend.")
+            return envs.VLLM_USE_V1
+        return False
 
     @classmethod
     def is_pin_memory_available(cls) -> bool:
@@ -136,6 +198,15 @@ class TTPlatform(Platform):
                     " which is only available with"
                     "sample_on_device_mode=None. "
                     f"Supplied params: {params}")
+            # type: ignore[attr-defined]
+            sample_mode = cls.sample_on_device_mode
+            # type: ignore[attr-defined]
+            non_greedy = cls.non_greedy_decoding_on_device
+            if (params.temperature > 0.0 and sample_mode is not None
+                    and not non_greedy):
+                raise ValueError(
+                    "Non-greedy decoding on-device is not supported by this "
+                    f"model implementation. Supplied params: {params}")
 
     @staticmethod
     def compat_sampling_required(sampling_params) -> bool:
