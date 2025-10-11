@@ -17,7 +17,7 @@ else:
 
 
 class TTPlatform(Platform):
-    _enum = PlatformEnum.CPU
+    _enum = PlatformEnum.TPU
     device_name: str = "tt"
     device_type: str = "tpu"
 

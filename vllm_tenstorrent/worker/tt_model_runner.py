@@ -86,7 +86,7 @@ def top_pk_logits_efficient(logits,
                             return_probs=False):
     # Do not keep the entire vocab size after top k.
     # Instead, keep the k size tensor and record the associated indices.
-    if k <= 0:  # no top-k sampling 
+    if k <= 0:  # no top-k sampling
         top_k_values, top_k_indices = logits, torch.arange(
             logits.shape[-1]).unsqueeze(0).repeat(logits.shape[0], 1)
     else:
@@ -418,7 +418,7 @@ class TTModelRunner(ModelRunnerBase[TTModelInput]):
                                 dtype=torch.int32,
                                 device="cpu")
                 ],
-                                         dim=1)
+                    dim=1)
                 if self.model_config.is_encoder_decoder:
                     # Note for vision models: the number of cross blocks
                     # may change if the number of image tiles changes
@@ -431,7 +431,7 @@ class TTModelRunner(ModelRunnerBase[TTModelInput]):
                                     dtype=torch.int32,
                                     device="cpu")
                     ],
-                                                   dim=1)
+                        dim=1)
 
         if self.dp_kv_cache:
 
@@ -543,7 +543,8 @@ class TTModelRunner(ModelRunnerBase[TTModelInput]):
                 # the last step should have 1 output unless we have
                 # scheduled less than self.scheduler_config.num_lookahead_slots
                 # + 1 steps in which case there will be 0 outputs
-                assert num_outputs <= 1, ("Last step should have at most one output")
+                assert num_outputs <= 1, (
+                    "Last step should have at most one output")
             for i in range(num_outputs):
                 next_token_ids = self.cached_step_outputs.pop(0)
                 if is_decode and self.async_torch_proc:
@@ -680,9 +681,9 @@ class TTModelRunner(ModelRunnerBase[TTModelInput]):
                 # Save encoder-decoder data for use in subsequent decode steps
                 # (may need to be updated for future models)
                 tt_out, prefill_cross_attention_masks, \
-                prefill_full_text_row_masked_out_mask, \
-                decode_cross_attention_masks, \
-                 decode_full_text_row_masked_out_mask = outputs
+                    prefill_full_text_row_masked_out_mask, \
+                    decode_cross_attention_masks, \
+                    decode_full_text_row_masked_out_mask = outputs
                 if self.cached_enc_dec_data is None:
                     self.cached_enc_dec_data = {}
                 for i, seq_id in enumerate(model_input.seq_groups):
@@ -767,6 +768,8 @@ class TTModelRunner(ModelRunnerBase[TTModelInput]):
                     "tokens"][inverse_perm_indices, :]
                 execute_model_kwargs["page_table"] = execute_model_kwargs[
                     "page_table"][inverse_perm_indices, :]
+            execute_model_kwargs["unpadded_batch_size"] = \
+                model_input.unpadded_batch_size
 
             tt_out = self.model.decode_forward(**execute_model_kwargs,
                                                **enc_dec_kwargs,
